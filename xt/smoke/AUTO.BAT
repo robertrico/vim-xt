@@ -1,0 +1,5 @@
+@ECHO OFF
+REM Called from AUTOEXEC.BAT when AUTORUN exists (xt/smoke.sh).
+DEL C:\VIM\SMOKE\AUTORUN
+CD \VIM\SMOKE
+SMOKE
