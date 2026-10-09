@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  dos16:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-watcom/setup-watcom@v1
+        with:
+          version: "2.0-64"
+      - name: Build vim.exe
+        run: xt/build.sh
+      - name: Check for 186+ instructions
+        run: xt/check8086.sh
+      - name: Package
+        run: |
+          mkdir -p out/SMOKE
+          cp src/vim.exe out/VIM.EXE
+          cp build/dos/cmpf.exe out/CMPF.EXE
+          cp build/dos/mcb.exe out/MCB.EXE
+          cp xt/dist/INSTALL.BAT out/
+          cp xt/smoke/* out/SMOKE/
+          cp LICENSE runtime/doc/uganda.txt out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vim-xt
+          path: out/
