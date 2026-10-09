@@ -46,27 +46,32 @@ if [ $build = 1 ]; then
 fi
 [ -f "$img" ] || "$XT_ROOT/mkdisks.sh"
 
-# Inject.  mcopy -o overwrites without asking.
-mmd -i "$D" ::VIM 2>/dev/null || true
-mmd -i "$D" ::VIM/SMOKE 2>/dev/null || true
-mcopy -o -i "$D" "$REPO_ROOT/src/vim.exe" ::VIM/VIM.EXE
-mcopy -o -i "$D" "$BUILD_DIR/dos/cmpf.exe" ::VIM/CMPF.EXE
+# Inject.  mtools asks on the terminal when a name already exists, so
+# never let it read the keyboard: mcopy -o overwrites, and directories are
+# only made when missing.
+mtools_dir() {
+    mdir -i "$D" "::$1" </dev/null >/dev/null 2>&1 || mmd -i "$D" "::$1" </dev/null
+}
+mtools_dir VIM
+mtools_dir VIM/SMOKE
+mcopy -o -i "$D" "$REPO_ROOT/src/vim.exe" ::VIM/VIM.EXE </dev/null
+mcopy -o -i "$D" "$BUILD_DIR/dos/cmpf.exe" ::VIM/CMPF.EXE </dev/null
 for f in "$XT_ROOT"/smoke/*; do
-    mcopy -o -i "$D" "$f" "::VIM/SMOKE/$(basename "$f")"
+    mcopy -o -i "$D" "$f" "::VIM/SMOKE/$(basename "$f")" </dev/null
 done
 # Leftovers from an earlier run would hide a failure.
 for f in T1.TXT T2.TXT CMP1.TXT CMP2.TXT RESULT.TXT AUTORUN; do
-    mdel -i "$D" "::VIM/SMOKE/$f" 2>/dev/null || true
+    mdel -i "$D" "::VIM/SMOKE/$f" </dev/null 2>/dev/null || true
 done
 if [ $auto = 1 ]; then
     printf 'x\r\n' > "$BUILD_DIR/autorun.tmp"
-    mcopy -o -i "$D" "$BUILD_DIR/autorun.tmp" ::VIM/SMOKE/AUTORUN
+    mcopy -o -i "$D" "$BUILD_DIR/autorun.tmp" ::VIM/SMOKE/AUTORUN </dev/null
     rm -f "$BUILD_DIR/autorun.tmp"
 fi
 
 # Make sure C:\VIM is on the PATH and the smoke test can start itself.
 tmp=$(mktemp -d)
-mcopy -o -i "$D" ::AUTOEXEC.BAT "$tmp/AUTOEXEC.BAT" 2>/dev/null \
+mcopy -o -i "$D" ::AUTOEXEC.BAT "$tmp/AUTOEXEC.BAT" 2>/dev/null </dev/null \
     || : > "$tmp/AUTOEXEC.BAT"
 changed=0
 # An AUTOEXEC.BAT without a final newline would glue our line onto its last.
@@ -82,7 +87,7 @@ if ! grep -qi 'AUTORUN' "$tmp/AUTOEXEC.BAT"; then
 	>> "$tmp/AUTOEXEC.BAT"
     changed=1
 fi
-[ $changed = 1 ] && mcopy -o -i "$D" "$tmp/AUTOEXEC.BAT" ::AUTOEXEC.BAT
+[ $changed = 1 ] && mcopy -o -i "$D" "$tmp/AUTOEXEC.BAT" ::AUTOEXEC.BAT </dev/null
 rm -rf "$tmp"
 echo "injected vim.exe into $img"
 
