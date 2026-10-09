@@ -18,6 +18,9 @@ mkdir -p "$out/SMOKE"
 # cp -X: no extended attributes, so macOS writes no ._ files on FAT.
 cp -X "$REPO_ROOT/src/vim.exe" "$out/VIM.EXE"
 cp -X "$BUILD_DIR/dos/cmpf.exe" "$out/CMPF.EXE"
+# MCB lists DOS memory blocks: :!MCB shows Vim swapped out to ~2K.
+(cd "$BUILD_DIR/dos" && wcl -zq -0 -ml -bt=dos -os -fe=mcb.exe "$XT_ROOT/dos/mcb.c" >/dev/null)
+cp -X "$BUILD_DIR/dos/mcb.exe" "$out/MCB.EXE"
 cp -X "$XT_ROOT/dist/INSTALL.BAT" "$out/INSTALL.BAT"
 for f in SMOKE.BAT IN1.TXT EXP1.TXT IN2.TXT EXP2.TXT T2.KEY; do
     cp -X "$XT_ROOT/smoke/$f" "$out/SMOKE/$f"
