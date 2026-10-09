@@ -122,6 +122,18 @@ SPAWNO library for this (`-DSPAWNO` in Makefile.bcc).  Our own swapper:
   `$TMP`, `$TEMP`, `C:\TMP` or `C:\TEMP` it returns NULL, because
   `mch_isdir("")` is false on DOS.  (Upstream bug; it also affects
   filtering.  Not fixed yet.)
+* When it can't swap, `:!` prints `Not swapping Vim out: <reason>` and
+  runs the command anyway with whatever memory is left:
+
+  | Reason | Fix |
+  |---|---|
+  | cannot create swap file | `$TEMP` names a directory that doesn't exist |
+  | cannot write swap file (disk full?) | about 400K free is needed on the `$TEMP` drive |
+  | 'shell' not found | `:set sh?`; COMSPEC should name COMMAND.COM with its path |
+  | interrupt XX points into Vim | a TSR or Vim hooked XX; please report it |
+  | too many memory blocks | more than 16 heap blocks; please report it |
+  | command longer than 126 characters | DOS command tail limit |
+
 * Build option: `wmake -f Make_wat.mak SWAP=0` leaves it out (defines
   `XT_SWAP` otherwise).  `SWAPTRACE=1` makes the stub show its stage as
   a digit in the top right corner of a colour screen.
@@ -165,17 +177,21 @@ and 7 lands on line 6, `:cn` on line 7 (DOS 3.3 and 5).
 
 ## Status
 
-2026-10-09, IBM 5160 in 86Box 6.0, 8088 at 4.77 MHz, 640K:
+2026-10-09:
 
-| DOS          | Video | smoke.sh       |
-|--------------|-------|----------------|
-| MS-DOS 5.00  | CGA   | PASS           |
-| MS-DOS 5.00  | MDA   | PASS           |
-| MS-DOS 6.22  | CGA   | PASS           |
-| PC DOS 3.30  | CGA   | PASS           |
+| Machine                            | DOS          | Video | Result          |
+|------------------------------------|--------------|-------|-----------------|
+| Real IBM 5160, NEC V20, 640K       | MS-DOS 5.00  | EGA in CGA mode | smoke PASS, `:!` swaps |
+| 86Box 5160, 8088 4.77 MHz, 640K    | MS-DOS 5.00  | CGA   | smoke, swaptest PASS |
+| 86Box 5160                         | MS-DOS 5.00  | MDA   | smoke PASS      |
+| 86Box 5160                         | MS-DOS 6.22  | CGA   | smoke PASS      |
+| 86Box 5160                         | PC DOS 3.30  | CGA   | smoke, swaptest PASS |
 
-`check8086.sh`: 113,238 instructions in 228 modules, no 186+ opcodes.
-vim.exe is 374,466 bytes; load image 360,000 bytes (DGROUP 40K incl. 8K
-stack).  Not yet checked: interactive use on screen, the Borland C++
-reference build, and that the Borland/DJGPP paths still compile after
-the `my*()` change in `mch_write()`.
+`check8086.sh`: 117,237 instructions in 231 modules, no 186+ opcodes.
+vim.exe is 388,790 bytes.  On the real 5160 the swap takes about 10
+seconds each way to the ST-251.
+
+Not yet checked: `:make` against Turbo C errors on real hardware, the
+Borland C++ reference build, that the Borland/DJGPP paths still compile
+after the `my*()` change in `mch_write()`, stack use (8K), and editing a
+large file (vim.exe itself hung in 86Box).
