@@ -1,0 +1,5 @@
+# Build output
+/build/
+/src/objwat/
+/src/vim.exe
+*.err
