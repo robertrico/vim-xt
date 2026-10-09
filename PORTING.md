@@ -127,6 +127,18 @@ Measured in 86Box, Turbo C 2.0 MAKE from `:!MAKE`: 61,903 bytes available
 before, 550,603 (DOS 3.3) and 540,763 (DOS 5) after.  Vim holds 1.8-2K
 while the program runs.
 
+## :make in the DOS build (src/feature.h, XT fork option)
+
+MIN_FEAT leaves out QUICKFIX, so the 5.8 DOS build had no `:make`, `:cn`,
+`:cp`, `:cl` or `:cf`.  `XT_QUICKFIX` (defined by Make_wat.mak unless
+`QUICKFIX=0`) turns QUICKFIX back on; the only upstream change is that
+`#if` in feature.h.  Cost: 10.5K of exe.  The DOS default 'errorformat'
+already matches Turbo C (`Error FILE.C 12: message` via `%*[^ ] %f %l: %m`)
+and 'makeef' is `vim##.err` in the current directory.
+
+Tested with `xt/swaptest.sh`: `:make` on a file with errors on lines 6
+and 7 lands on line 6, `:cn` on line 7 (DOS 3.3 and 5).
+
 ## Test environment (new, `xt/`)
 
 * `xt/mkdisks.sh` makes 20 MB ST-506 hard disk images: MS-DOS 5.00
@@ -139,7 +151,8 @@ while the program runs.
   with mtools, then stops 86Box.  Exit status 0 = pass.
 * `xt/swaptest.sh [dos33|dos5|dos622]` builds a hello-world with Turbo C
   MAKE and TCC from inside Vim with `:!`, runs it, and checks Vim's buffer
-  survived the swap.
+  survived the swap; then checks `:make` and `:cn` land on the error
+  lines of a broken file.
 * `xt/check8086.sh` disassembles every object in vim.exe, Vim's and the
   C library modules from the link map, and fails on any 186+ opcode.
 * `xt/smoke/SMOKE.BAT` runs Vim with `-c` ex commands and with a `-s`

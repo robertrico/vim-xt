@@ -148,6 +148,13 @@
 #ifndef MIN_FEAT
 # define QUICKFIX
 #endif
+/*
+ * XT fork: XT_QUICKFIX keeps the quickfix commands (:make, :cn, :cp, :cl,
+ * :cf ...) in the MIN_FEAT DOS build, for using Vim as the IDE with Turbo C.
+ */
+#if defined(XT_QUICKFIX) && !defined(QUICKFIX)
+# define QUICKFIX
+#endif
 
 /*
  * +file_in_path	When FILE_IN_PATH defined: Support for "gf" and

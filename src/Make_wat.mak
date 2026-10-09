@@ -38,6 +38,14 @@ SWAPOBJ = $(OBJDIR)/dosswap.obj
 SWAPOBJ =
 !endif
 
+# QUICKFIX=0: leave out :make, :cn, :cp ... (XT_QUICKFIX in feature.h)
+!ifndef QUICKFIX
+QUICKFIX = 1
+!endif
+!ifeq QUICKFIX 1
+CFLAGS += -dXT_QUICKFIX
+!endif
+
 # SWAPTRACE=1: dosswap.asm shows its stage on a colour screen
 !ifdef SWAPTRACE
 AFLAGS += -dXT_SWAP_TRACE

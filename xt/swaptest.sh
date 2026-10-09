@@ -7,8 +7,10 @@
 # Usage: xt/swaptest.sh [-n] [dos33|dos5|dos622]	(-n: don't rebuild)
 #
 # Inside Vim:  :!MAKE   :!MCB (memory map during :!)   :!HELLO   :w CHECK.C
+# then on BAD.C (errors on lines 6 and 7):  :make  :.w L1.TXT  :cn  :.w L2.TXT
 # Pass: HELLO.EXE built and prints, CHECK.C == HELLO.C (Vim's buffer came
-# back intact).  Results are printed; exit status 0 = pass.
+# back intact), and :make / :cn landed on the error lines.
+# Results are printed; exit status 0 = pass.
 #
 . "$(dirname "$0")/env.sh"
 export MTOOLS_SKIP_CHECK=1 MTOOLS_NO_VFAT=1
@@ -38,11 +40,15 @@ done
 
 tmp=$(mktemp -d)
 printf '#include <stdio.h>\r\n\r\nint main()\r\n{\r\n    printf("hello from tcc\\n");\r\n    return 0;\r\n}\r\n' > "$tmp/HELLO.C"
-printf 'hello.exe: hello.c\r\n\ttcc -IC:\\TC\\INCLUDE -LC:\\TC\\LIB hello.c\r\n' > "$tmp/MAKEFILE"
+printf '#include <stdio.h>\r\n\r\nint main()\r\n{\r\n    int x;\r\n    printf("%%d\\n", y);\r\n    return z;\r\n}\r\n' > "$tmp/BAD.C"
+printf 'hello.exe: hello.c\r\n\ttcc -IC:\\TC\\INCLUDE -LC:\\TC\\LIB hello.c\r\n\r\nbad.exe: bad.c\r\n\ttcc -IC:\\TC\\INCLUDE -LC:\\TC\\LIB bad.c\r\n' > "$tmp/MAKEFILE"
+# A ":" also answers a "Press RETURN" prompt, so no stray Enter moves the
+# cursor before the line is written.
+printf ':set makeprg=make\\ bad.exe\r:make\r:.w! L1.TXT\r:cn\r:.w! L2.TXT\r:q!\r' > "$tmp/Q.KEY"
 printf ':!MAKE > MK.TXT\r\r:!MCB > MCB.TXT\r\r:!HELLO > OUT.TXT\r\r:w CHECK.C\r:q!\r' > "$tmp/K.KEY"
-printf '@ECHO OFF\r\npath=c:\\bin;c:\\tc;C:\\VIM\r\nMD \\MKT\r\nCD \\MKT\r\nVIM -u NONE -s K.KEY HELLO.C\r\nCMPF HELLO.C CHECK.C > CMP.TXT\r\nECHO done > DONE.TXT\r\n' > "$tmp/AUTOEXEC.BAT"
+printf '@ECHO OFF\r\npath=c:\\bin;c:\\tc;C:\\VIM\r\nMD \\MKT\r\nCD \\MKT\r\nVIM -u NONE -s K.KEY HELLO.C\r\nCMPF HELLO.C CHECK.C > CMP.TXT\r\nVIM -u NONE -s Q.KEY BAD.C\r\nECHO done > DONE.TXT\r\n' > "$tmp/AUTOEXEC.BAT"
 mmd -i "$D" ::MKT </dev/null
-for f in HELLO.C MAKEFILE K.KEY; do
+for f in HELLO.C BAD.C MAKEFILE K.KEY Q.KEY; do
     mcopy -o -i "$D" "$tmp/$f" "::MKT/$f" </dev/null
 done
 mcopy -o -i "$D" "$tmp/AUTOEXEC.BAT" ::AUTOEXEC.BAT </dev/null
@@ -65,14 +71,23 @@ sleep 2
 kill -9 $pid 2>/dev/null
 wait $pid 2>/dev/null
 echo "($(( $(date +%s) - start ))s)"
-for f in MK MCB OUT CMP; do
+for f in MK MCB OUT CMP L1 L2; do
     echo "== $f.TXT"
     mtype -i "$D" "::MKT/$f.TXT" </dev/null 2>&1 | LC_ALL=C tr -d '\r' \
 	| LC_ALL=C tr -c '[:print:]\n' '?'
 done
 out=$(mtype -i "$D" ::MKT/OUT.TXT </dev/null 2>/dev/null | tr -d '\r')
 cmp=$(mtype -i "$D" ::MKT/CMP.TXT </dev/null 2>/dev/null | tr -d '\r')
+l1=$(mtype -i "$D" ::MKT/L1.TXT </dev/null 2>/dev/null | tr -d '\r')
+l2=$(mtype -i "$D" ::MKT/L2.TXT </dev/null 2>/dev/null | tr -d '\r')
+rc=0
 case "$out$cmp" in
-    "hello from tcc"*"are the same"*) echo "SWAPTEST: PASS"; exit 0 ;;
-    *) echo "SWAPTEST: FAIL"; exit 1 ;;
+    "hello from tcc"*"are the same"*) echo "SWAP: PASS" ;;
+    *) echo "SWAP: FAIL"; rc=1 ;;
 esac
+if [ "$l1" = '    printf("%d\n", y);' ] && [ "$l2" = '    return z;' ]; then
+    echo "QUICKFIX: PASS"
+else
+    echo "QUICKFIX: FAIL"; rc=1
+fi
+exit $rc
