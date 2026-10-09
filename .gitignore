@@ -3,3 +3,5 @@
 /src/objwat/
 /src/vim.exe
 *.err
+/media/
+/xt/local.sh
