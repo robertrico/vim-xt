@@ -39,10 +39,7 @@ case "$video" in
 esac
 
 if [ $build = 1 ]; then
-    (cd "$REPO_ROOT/src" && wmake -h -f Make_wat.mak)
-    mkdir -p "$BUILD_DIR/dos"
-    (cd "$BUILD_DIR/dos" && wcl -zq -0 -ml -bt=dos -os -fe=cmpf.exe \
-					    "$XT_ROOT/dos/cmpf.c" >/dev/null)
+    "$XT_ROOT/build.sh" >/dev/null
 fi
 [ -f "$img" ] || "$XT_ROOT/mkdisks.sh"
 
