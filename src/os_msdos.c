@@ -2264,6 +2264,10 @@ swap_vector_hooked(struct xt_swap far *sp)
 
     for (i = 0; i < 256; ++i)
     {
+	/* 22h is the terminate address: DOS EXEC points it at its caller
+	 * (Vim, after a system() call) and gives the child its own. */
+	if (i == 0x22)
+	    continue;
 	if (start_vectors != NULL && vec[i] == start_vectors[i])
 	    continue;
 	v = ((vec[i] >> 16) << 4) + (vec[i] & 0xffff);

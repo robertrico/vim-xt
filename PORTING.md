@@ -114,6 +114,9 @@ SPAWNO library for this (`-DSPAWNO` in Makefile.bcc).  Our own swapper:
 * Interrupt vectors are compared with a snapshot taken at startup; unused
   vectors hold garbage that may point anywhere (30h-31h even hold DOS's
   CP/M far JMP), so "points into Vim" alone gives false alarms.
+  Int 22h (terminate address) is skipped: DOS EXEC points it at the
+  caller, so after one `system()` fallback it points into Vim for good,
+  and the child gets its own copy anyway.  Found on a real XT.
 * The swap file is `$TEMP\VIMxxxx.SWP` (or `$TMP`, or the current
   directory), xxxx = PSP segment.  `vim_tempname()` isn't used: with no
   `$TMP`, `$TEMP`, `C:\TMP` or `C:\TEMP` it returns NULL, because

@@ -45,7 +45,9 @@ printf 'hello.exe: hello.c\r\n\ttcc -IC:\\TC\\INCLUDE -LC:\\TC\\LIB hello.c\r\n\
 # A ":" also answers a "Press RETURN" prompt, so no stray Enter moves the
 # cursor before the line is written.
 printf ':set makeprg=make\\ bad.exe\r:make\r:.w! L1.TXT\r:cn\r:.w! L2.TXT\r:q!\r' > "$tmp/Q.KEY"
-printf ':!MAKE > MK.TXT\r\r:!MCB > MCB.TXT\r\r:!HELLO > OUT.TXT\r\r:w CHECK.C\r:q!\r' > "$tmp/K.KEY"
+# First a :! that falls back to system() ('shell' not found): it leaves
+# int 22h pointing into Vim, which must not stop the next :! swapping.
+printf ':set sh=NOSUCH.COM\r:!REM\r\r:set sh=C:/COMMAND.COM\r:!MAKE > MK.TXT\r\r:!MCB > MCB.TXT\r\r:!HELLO > OUT.TXT\r\r:w CHECK.C\r:q!\r' > "$tmp/K.KEY"
 printf '@ECHO OFF\r\npath=c:\\bin;c:\\tc;C:\\VIM\r\nMD \\MKT\r\nCD \\MKT\r\nVIM -u NONE -s K.KEY HELLO.C\r\nCMPF HELLO.C CHECK.C > CMP.TXT\r\nVIM -u NONE -s Q.KEY BAD.C\r\nECHO done > DONE.TXT\r\n' > "$tmp/AUTOEXEC.BAT"
 mmd -i "$D" ::MKT </dev/null
 for f in HELLO.C BAD.C MAKEFILE K.KEY Q.KEY; do
