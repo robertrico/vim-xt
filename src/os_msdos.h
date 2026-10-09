@@ -68,7 +68,12 @@
 #define FNAME_ILLEGAL "\"*?><|" /* illegal characters in a file name */
 
 #include <dos.h>
-#include <dir.h>
+#ifdef __WATCOMC__
+# include <direct.h>		/* getcwd(), chdir(), mkdir(), rmdir() */
+# include <env.h>		/* setenv() */
+#else
+# include <dir.h>
+#endif
 #include <time.h>
 
 #ifdef DJGPP

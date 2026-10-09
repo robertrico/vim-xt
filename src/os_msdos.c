@@ -31,11 +31,18 @@
 # include <signal.h>
 # include <sys/movedata.h>
 #else
-# include <alloc.h>
+# ifdef __WATCOMC__
+#  include <malloc.h>
+#  include <stdlib.h>
+#  include <i86.h>
+# else
+#  include <alloc.h>
+# endif
 #endif
 
-#if defined(DJGPP) || defined(PROTO)
-# define _cdecl	    /* DJGPP doesn't have this */
+#if defined(DJGPP) || defined(__WATCOMC__) || defined(PROTO)
+# define _cdecl	    /* DJGPP doesn't have this; Watcom's qsort() wants
+		       the default calling convention */
 #endif
 
 static int cbrk_pressed = FALSE;    /* set by ctrl-break interrupt */
@@ -214,15 +221,358 @@ mytextbackground(int iBkgColor)
     textattr(S_uiAttribute >> 8);	/* for delline() etc */
 }
 
+# define myclreol clreol
+# define myclrscr clrscr
+# define myinsline insline
+# define mydelline delline
+
 #else
-# define mygotoxy gotoxy
-# define myputch putch
-# define myscroll scroll
-# define mywindow window
-# define mynormvideo normvideo
-# define mytextattr textattr
-# define mytextcolor textcolor
-# define mytextbackground textbackground
+# ifdef __WATCOMC__
+/*
+ * Open Watcom has no Borland text-window conio (gotoxy(), window(),
+ * insline(), textattr() ...).  Emulate the Borland semantics with direct
+ * writes to video memory.  Like Borland, cursor positions and line
+ * insert/delete are relative to the current window (Vim sets T_CCS for
+ * "pcterm" and relies on that).  The hardware cursor is only moved when
+ * waiting for input, see vid_sync_cursor().
+ */
+
+static unsigned	vid_seg = 0xb800;	/* B000 for MDA/Hercules */
+static unsigned	vid_page = 0;		/* offset of active page */
+static int	vid_snow = FALSE;	/* wait for retrace (IBM CGA) */
+static int	vid_cols = 80;		/* bytes per row = vid_cols * 2 */
+static unsigned	vid_attr = 0x0700;	/* attribute in high byte */
+static int	vid_row = 0;		/* 0-based, absolute */
+static int	vid_col = 0;
+static int	vid_top = 0;		/* window, 0-based, inclusive */
+static int	vid_bot = 24;
+static int	vid_left = 0;
+static int	vid_right = 79;
+static int	vid_hw_row = -1;	/* last position sent to the BIOS */
+static int	vid_hw_col = -1;
+static int	vid_ega = FALSE;	/* EGA or VGA present */
+
+/* Borland text mode numbers, used by mch_screenmode() */
+#  define BW40	0
+#  define C40	1
+#  define BW80	2
+#  define C80	3
+#  define MONO	7
+#  define C4350	64
+
+/*
+ * Find out about the display adapter.  Called again after a mode change.
+ */
+    static void
+vid_init(void)
+{
+    union REGS	regs;
+
+    regs.h.ah = 0x0f;		/* get video mode */
+    int86(0x10, &regs, &regs);
+    vid_cols = regs.h.ah;
+    vid_seg = (regs.h.al == 7) ? 0xb000 : 0xb800;
+    vid_page = *(unsigned short far *)MK_FP(0x40, 0x4e);
+
+    regs.h.ah = 0x12;		/* EGA: get configuration */
+    regs.h.bl = 0x10;
+    int86(0x10, &regs, &regs);
+    vid_ega = (regs.h.bl != 0x10);
+
+    /* Only a real CGA snows; MDA, EGA and VGA don't. */
+    vid_snow = (!vid_ega && vid_seg == 0xb800);
+}
+
+/*
+ * Return the address of the character cell at "row", "col".
+ */
+#  define VID_CELL(row, col) ((unsigned short far *)MK_FP(vid_seg, \
+			    vid_page + (((row) * vid_cols + (col)) << 1)))
+
+/*
+ * Store "n" copies of "cell" from "p".  On a CGA each store waits for
+ * horizontal retrace to avoid snow.
+ */
+    static void
+vid_store(unsigned short far *p, unsigned cell, int n)
+{
+    if (vid_snow)
+	while (n-- > 0)
+	{
+	    _disable();
+	    while (inp(0x3da) & 1)	/* wait for end of retrace */
+		;
+	    while (!(inp(0x3da) & 1))	/* wait for start of retrace */
+		;
+	    *p++ = cell;
+	    _enable();
+	}
+    else
+	while (n-- > 0)
+	    *p++ = cell;
+}
+
+/*
+ * Scroll rows "top" to "bot" of the window "n" lines up (n > 0) or down
+ * (n < 0), filling with blanks.  Uses the BIOS, which blanks the display
+ * on a CGA while moving.
+ */
+    static void
+vid_bios_scroll(int top, int bot, int n)
+{
+    union REGS	regs;
+
+    regs.h.ah = (n < 0) ? 0x07 : 0x06;
+    regs.h.al = (n < 0) ? -n : n;
+    regs.h.bh = vid_attr >> 8;
+    regs.h.ch = top;
+    regs.h.cl = vid_left;
+    regs.h.dh = bot;
+    regs.h.dl = vid_right;
+    int86(0x10, &regs, &regs);
+}
+
+/*
+ * Move the hardware cursor to where Vim thinks it is.
+ */
+    static void
+vid_sync_cursor(void)
+{
+    union REGS	regs;
+
+    if (vid_row == vid_hw_row && vid_col == vid_hw_col)
+	return;
+    regs.h.ah = 0x02;
+    regs.h.bh = 0;
+    regs.h.dh = vid_row;
+    regs.h.dl = vid_col;
+    int86(0x10, &regs, &regs);
+    vid_hw_row = vid_row;
+    vid_hw_col = vid_col;
+}
+
+    static void
+mygotoxy(int x, int y)
+{
+    /* Borland: position is relative to the window, ignore when outside */
+    if (x < 1 || y < 1 || x > vid_right - vid_left + 1
+					       || y > vid_bot - vid_top + 1)
+	return;
+    vid_col = vid_left + x - 1;
+    vid_row = vid_top + y - 1;
+}
+
+    static void
+myscroll(void)
+{
+    vid_bios_scroll(vid_top, vid_bot, 1);
+}
+
+    static int
+myputch(int iChar)
+{
+    switch (iChar)
+    {
+	case '\r':
+	    vid_col = vid_left;
+	    break;
+	case '\n':
+	    if (vid_row < vid_bot)
+		++vid_row;
+	    else
+		myscroll();
+	    break;
+	case '\b':
+	    if (vid_col > vid_left)
+		--vid_col;
+	    break;
+	case 7:
+	    sound(440);	/* short beep */
+	    delay(200);
+	    nosound();
+	    break;
+	default:
+	    vid_store(VID_CELL(vid_row, vid_col),
+				       vid_attr | (unsigned char)iChar, 1);
+	    if (++vid_col > vid_right)
+	    {
+		vid_col = vid_left;
+		if (vid_row < vid_bot)
+		    ++vid_row;
+		else
+		    myscroll();
+	    }
+	    break;
+    }
+    return iChar;
+}
+
+    static void
+mywindow(int iLeft, int iTop, int iRight, int iBottom)
+{
+    if (iLeft < 1 || iTop < 1 || iLeft > iRight || iTop > iBottom)
+	return;
+    vid_left = iLeft - 1;
+    vid_top = iTop - 1;
+    vid_right = iRight - 1;
+    vid_bot = iBottom - 1;
+    vid_row = vid_top;		/* Borland homes the cursor */
+    vid_col = vid_left;
+}
+
+    static void
+mytextattr(int iAttribute)
+{
+    vid_attr = (unsigned)(iAttribute & 0xff) << 8;
+}
+
+    static void
+mynormvideo(void)
+{
+    mytextattr(orig_attr);
+}
+
+    static void
+mytextcolor(int iTextColor)
+{
+    vid_attr = (vid_attr & 0xf000) | ((unsigned)(iTextColor & 0xf) << 8);
+}
+
+    static void
+mytextbackground(int iBkgColor)
+{
+    vid_attr = (vid_attr & 0x0f00) | ((unsigned)(iBkgColor & 0xf) << 12);
+}
+
+    static void
+myclreol(void)
+{
+    vid_store(VID_CELL(vid_row, vid_col), vid_attr | ' ',
+						   vid_right - vid_col + 1);
+}
+
+    static void
+myclrscr(void)
+{
+    vid_bios_scroll(vid_top, vid_bot, 0);
+    vid_row = vid_top;
+    vid_col = vid_left;
+}
+
+    static void
+myinsline(void)
+{
+    vid_bios_scroll(vid_row, vid_bot, -1);
+}
+
+    static void
+mydelline(void)
+{
+    vid_bios_scroll(vid_row, vid_bot, 1);
+}
+
+/*
+ * Borland and Watcom library differences.
+ */
+#  define FA_ARCH	_A_ARCH
+#  define FA_DIREC	_A_SUBDIR
+#  define ffblk		find_t
+#  define ff_name	name
+#  define findfirst(n, fb, a)	_dos_findfirst((n), (a), (fb))
+#  define findnext(fb)		_dos_findnext(fb)
+#  define bioskey(cmd)		_bios_keybrd(cmd)
+#  define biostime(cmd, t)	bios_ticks()
+#  define coreleft()		dos_coreleft()
+#  define searchpath(n)		dos_searchpath(n)
+#  define getcbrk()		dos_cbrk(0, 0)
+#  define setcbrk(v)		dos_cbrk(1, (v))
+
+/*
+ * Read the BIOS tick counter.  Unlike int 1A this doesn't clear the
+ * midnight flag; interrupts are off so the two words can't tear.
+ */
+    static long
+bios_ticks(void)
+{
+    long    t;
+
+    _disable();
+    t = *(long far *)MK_FP(0x40, 0x6c);
+    _enable();
+    return t;
+}
+
+/*
+ * Largest block DOS can give us, like Borland's large model coreleft().
+ */
+    static long_u
+dos_coreleft(void)
+{
+    unsigned	paras;
+
+    if (_dos_allocmem(0xffff, &paras) == 0)	/* can't happen, but... */
+    {
+	_dos_freemem(paras);
+	return 0xffffL << 4;
+    }
+    return (long_u)paras << 4;
+}
+
+    static char *
+dos_searchpath(char *name)
+{
+    static char	buf[_MAX_PATH];
+
+    _searchenv(name, "PATH", buf);
+    return buf[0] == NUL ? NULL : buf;
+}
+
+/*
+ * Get (set == 0) or set the DOS ctrl-break checking flag.
+ */
+    static int
+dos_cbrk(int set, int value)
+{
+    union REGS	regs;
+
+    regs.h.ah = 0x33;
+    regs.h.al = set;
+    regs.h.dl = value;
+    intdos(&regs, &regs);
+    return regs.h.dl;
+}
+
+/*
+ * _chmod(name, 0, 0) gets the DOS attributes, _chmod(name, 1, attr) sets
+ * them.  Returns -1 for failure.
+ */
+    static int
+wat_chmod(const char *name, int set, int attr)
+{
+    unsigned	a;
+
+    if (set)
+	return _dos_setfileattr(name, attr) == 0 ? attr : -1;
+    if (_dos_getfileattr(name, &a) != 0)
+	return -1;
+    return (int)a;
+}
+#  define _chmod	wat_chmod
+
+# else
+#  define mygotoxy gotoxy
+#  define myputch putch
+#  define myscroll scroll
+#  define mywindow window
+#  define mynormvideo normvideo
+#  define mytextattr textattr
+#  define mytextcolor textcolor
+#  define mytextbackground textbackground
+#  define myclreol clreol
+#  define myclrscr clrscr
+#  define myinsline insline
+#  define mydelline delline
+# endif
 #endif
 
 static const struct
@@ -452,6 +802,16 @@ static int cons_key = -1;
     static void
 cons_getkey(void)
 {
+#ifdef __WATCOMC__
+    union REGPACK regs;		/* Watcom's REGS has no flags */
+
+    /* call DOS function 6: Direct console I/O */
+    regs.h.ah = 0x06;
+    regs.h.dl = 0xff;
+    intr(0x21, &regs);
+    if ((regs.w.flags & INTR_ZF) == 0)	/* zero flag not set? */
+	cons_key = (regs.h.al & 0xff);
+#else
     union REGS regs;
 
     /* call DOS function 6: Direct console I/O */
@@ -460,6 +820,7 @@ cons_getkey(void)
     (void)intdos(&regs, &regs);
     if ((regs.x.flags & 0x40) == 0)	/* zero flag not set? */
 	cons_key = (regs.h.al & 0xff);
+#endif
 }
 
 /*
@@ -533,6 +894,10 @@ WaitForChar(long msec)
     long	starttime;
     int		x, y;
 
+#ifdef __WATCOMC__
+    if (msec != 0 && term_console && full_screen)
+	vid_sync_cursor();	/* show the cursor while waiting */
+#endif
     starttime = biostime(0, 0L);
 
     for (;;)
@@ -690,16 +1055,16 @@ mch_write(
 		case 'B':   ScreenVisualBell();
 			    goto got3;
 #endif
-		case 'J':   clrscr();
+		case 'J':   myclrscr();
 			    goto got3;
 
-		case 'K':   clreol();
+		case 'K':   myclreol();
 			    goto got3;
 
-		case 'L':   insline();
+		case 'L':   myinsline();
 			    goto got3;
 
-		case 'M':   delline();
+		case 'M':   mydelline();
 got3:			    s += 3;
 			    len -= 2;
 			    continue;
@@ -995,6 +1360,75 @@ mch_char_avail(void)
 # define INT_ARG
 #endif
 
+#ifdef __WATCOMC__
+/*
+ * Watcom versions of the interrupt handlers below.
+ */
+    static void __interrupt __far
+catch_cbrk(void)
+{
+    cbrk_pressed = TRUE;
+    ctrlc_pressed = TRUE;
+}
+
+/*
+ * ctrl-C handler (int 23): like Borland's ctrlbrk() handler returning
+ * non-zero, an IRET makes DOS resume the program.  The redraw is done in
+ * mch_inchar().
+ */
+    static void __interrupt __far
+catch_ctrlc(void)
+{
+    delayed_redraw = TRUE;
+}
+
+/*
+ * critical error handler (int 24): ignore for DOS 1 and 2, fail for DOS 3
+ * and later.
+ */
+    static void __interrupt __far
+catch_cint(union INTPACK r)
+{
+    r.h.al = (_osmajor >= 3) ? 3 : 0;
+}
+
+    static void
+set_interrupts(int on)
+{
+    static int saved_cbrk;
+    static void (__interrupt __far *old_cint)();
+    static void (__interrupt __far *old_cbrk)();
+    static void (__interrupt __far *old_ctrlc)();
+
+    if (on)
+    {
+	saved_cbrk = getcbrk();		/* save old ctrl-break setting */
+	setcbrk(0);			/* do not check for ctrl-break */
+	old_cint = _dos_getvect(0x24);
+	_dos_setvect(0x24, catch_cint);
+	old_cbrk = _dos_getvect(0x1B);
+	_dos_setvect(0x1B, catch_cbrk);
+	old_ctrlc = _dos_getvect(0x23);
+	_dos_setvect(0x23, catch_ctrlc);
+	if (term_console)
+	    out_str(T_ME);		/* set colors */
+    }
+    else
+    {
+	setcbrk(saved_cbrk);		/* restore ctrl-break setting */
+	_dos_setvect(0x24, old_cint);
+	_dos_setvect(0x1B, old_cbrk);
+	_dos_setvect(0x23, old_ctrlc);
+	if (term_console)
+	{
+	    mynormvideo();		/* restore screen colors */
+	    vid_sync_cursor();		/* DOS continues where we are */
+	}
+    }
+}
+
+#else /* !__WATCOMC__ */
+
 /*
  * function for ctrl-break interrupt
  */
@@ -1083,6 +1517,7 @@ set_interrupts(int on)
 	    mynormvideo();		/* restore screen colors */
     }
 }
+#endif /* !__WATCOMC__ */
 
 /*
  * We have no job control, fake it by starting a new shell.
@@ -1093,7 +1528,9 @@ mch_suspend(void)
     suspend_shell();
 }
 
+#ifndef __WATCOMC__	/* a macro in Watcom's stdlib.h */
 extern int _fmode;
+#endif
 
 /*
  * Prepare window for use by Vim.
@@ -1103,6 +1540,9 @@ mch_windinit(void)
 {
     union REGS regs;
 
+#ifdef __WATCOMC__
+    vid_init();
+#endif
     /*
      * Get the video attributes at the cursor.  These will be used as the
      * default attributes.
@@ -1342,7 +1782,7 @@ mch_FullName(
 	return OK;
     }
 
-#ifdef __BORLANDC__		/* Only Borland C++ has this */
+#if defined(__BORLANDC__) || defined(__WATCOMC__)	/* have _fullpath() */
     if (_fullpath((char *)buf, (char *)fname, len - 1) == NULL)
     {
 	STRNCPY(buf, fname, len);   /* failed, use the relative path name */
@@ -1607,7 +2047,25 @@ mch_screenmode(char_u *arg)
 	EMSG("Unsupported screen mode");
 	return FAIL;
     }
+#ifdef __WATCOMC__
+    {
+	union REGS	regs;
+
+	regs.h.ah = 0x00;	    /* set video mode */
+	regs.h.al = (mode == C4350) ? C80 : mode;
+	int86(0x10, &regs, &regs);
+	if (mode == C4350 && vid_ega)
+	{
+	    regs.x.ax = 0x1112;	    /* load 8x8 font: 43 or 50 lines */
+	    regs.h.bl = 0;
+	    int86(0x10, &regs, &regs);
+	}
+	vid_init();
+	vid_hw_row = -1;	    /* the BIOS moved the cursor */
+    }
+#else
     textmode(mode);		    /* use Borland function */
+#endif
 #ifdef DJGPP
     /* base address may have changed */
     get_screenbase();
@@ -1636,7 +2094,7 @@ mch_screenmode(char_u *arg)
 /*
  * Structure used by Turbo-C/Borland-C to store video parameters.
  */
-#ifndef DJGPP
+#if !defined(DJGPP) && !defined(__WATCOMC__)
 extern struct text_info _video;
 #endif
 
@@ -1647,7 +2105,9 @@ extern struct text_info _video;
     int
 mch_get_winsize(void)
 {
+#ifndef __WATCOMC__
     struct text_info textinfo;
+#endif
 /*
  * The screenwidth is returned by the BIOS OK.
  * The screenheight is in a location in the bios RAM, if the display is EGA or
@@ -1655,12 +2115,18 @@ mch_get_winsize(void)
  */
     if (!term_console)
 	return FAIL;
+#ifdef __WATCOMC__
+    vid_init();
+    Columns = vid_cols;
+    Rows = vid_ega ? *(unsigned char far *)MK_FP(0x40, 0x84) + 1 : 25;
+#else
     gettextinfo(&textinfo);
     Columns = textinfo.screenwidth;
     Rows = textinfo.screenheight;
-#ifndef DJGPP
+# ifndef DJGPP
     if (textinfo.currmode > 10)
 	Rows = *(char far *)MK_FP(0x40, 0x84) + 1;
+# endif
 #endif
 
     /*
@@ -1710,7 +2176,7 @@ set_window(void)
 {
     if (term_console)
     {
-#ifndef DJGPP
+#if !defined(DJGPP) && !defined(__WATCOMC__)
 	_video.screenheight = Rows;
 #endif
 	mywindow(1, 1, Columns, Rows);
@@ -1948,7 +2414,8 @@ dos_expandpath(
     matches = gap->ga_len - start_len;
     if (matches)
 	qsort(((char_u **)gap->ga_data) + start_len, (size_t)matches,
-						   sizeof(char_u *), pstrcmp);
+			     sizeof(char_u *),
+			     (int (_cdecl *)(const void *, const void *))pstrcmp);
     return matches;
 }
 
