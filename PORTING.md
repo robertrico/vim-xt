@@ -92,6 +92,41 @@ except where noted.
 * `mch_get_winsize()`: columns from int 10h AH=0Fh, rows from 0040:0084
   on EGA/VGA, else 25.
 
+## Swapping Vim out for :! and :make (new: src/dosswap.asm)
+
+Vim holds about 480K of 640K (code, data, heap), so a program run with `:!`
+got about 60K: not enough for MAKE plus TCC.  The Borland build used the
+SPAWNO library for this (`-DSPAWNO` in Makefile.bcc).  Our own swapper:
+
+* `src/dosswap.asm` is a 1.5K stub, linked first so it sits right after
+  the PSP.  It writes the rest of the main memory block and every other
+  DOS block Vim owns (the heap) to a swap file, frees them, runs the
+  program with DOS EXEC, then reallocates the blocks at the same
+  segments and reads everything back.  First-fit allocation that lands
+  in an older free gap is held off with placeholder blocks.  A failure
+  before memory is freed returns an error; after that it can't be undone,
+  so it prints how to recover from the .swp file and exits.
+* `os_msdos.c` `swap_shell()`, called from `mch_call_shell()`, fills in
+  the stub's parameters.  It falls back to `system()` with a message when
+  swapping isn't possible: more than 16 heap blocks, 'shell' not found,
+  command over 126 characters, a vector Vim changed points into memory
+  that would be swapped, or the swap file can't be written.
+* Interrupt vectors are compared with a snapshot taken at startup; unused
+  vectors hold garbage that may point anywhere (30h-31h even hold DOS's
+  CP/M far JMP), so "points into Vim" alone gives false alarms.
+* The swap file is `$TEMP\VIMxxxx.SWP` (or `$TMP`, or the current
+  directory), xxxx = PSP segment.  `vim_tempname()` isn't used: with no
+  `$TMP`, `$TEMP`, `C:\TMP` or `C:\TEMP` it returns NULL, because
+  `mch_isdir("")` is false on DOS.  (Upstream bug; it also affects
+  filtering.  Not fixed yet.)
+* Build option: `wmake -f Make_wat.mak SWAP=0` leaves it out (defines
+  `XT_SWAP` otherwise).  `SWAPTRACE=1` makes the stub show its stage as
+  a digit in the top right corner of a colour screen.
+
+Measured in 86Box, Turbo C 2.0 MAKE from `:!MAKE`: 61,903 bytes available
+before, 550,603 (DOS 3.3) and 540,763 (DOS 5) after.  Vim holds 1.8-2K
+while the program runs.
+
 ## Test environment (new, `xt/`)
 
 * `xt/mkdisks.sh` makes 20 MB ST-506 hard disk images: MS-DOS 5.00
@@ -102,6 +137,9 @@ except where noted.
 * `xt/smoke.sh` does the same hands-off: a flag file makes AUTOEXEC.BAT
   call `SMOKE.BAT`, which writes `RESULT.TXT`; the host polls the image
   with mtools, then stops 86Box.  Exit status 0 = pass.
+* `xt/swaptest.sh [dos33|dos5|dos622]` builds a hello-world with Turbo C
+  MAKE and TCC from inside Vim with `:!`, runs it, and checks Vim's buffer
+  survived the swap.
 * `xt/check8086.sh` disassembles every object in vim.exe, Vim's and the
   C library modules from the link map, and fails on any 186+ opcode.
 * `xt/smoke/SMOKE.BAT` runs Vim with `-c` ex commands and with a `-s`

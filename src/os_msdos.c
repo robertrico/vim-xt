@@ -74,6 +74,10 @@ static int mouse_y_div = 8;		/* line   = y coord / mouse_y_div */
 
 static int orig_attr = 0x0700;		/* video attributes when starting */
 
+#ifdef XT_SWAP
+static void swap_save_vectors(void);
+#endif
+
 #ifdef DJGPP
 /*
  * For DJGPP, use our own functions for fast text screens.  JML 1/18/98
@@ -1560,6 +1564,9 @@ mch_windinit(void)
     term_console = TRUE;    /* assume using the console for the things here */
     _fmode = O_BINARY;	    /* we do our own CR-LF translation */
     out_flush();
+#ifdef XT_SWAP
+    swap_save_vectors();    /* before we hook any */
+#endif
     set_interrupts(TRUE);   /* catch interrupts */
 
 #ifdef DJGPP
@@ -2195,6 +2202,248 @@ mch_set_winsize(void)
 #endif
 }
 
+#ifdef XT_SWAP
+/*
+ * Swap Vim out to a file while a program runs, so that the program gets
+ * nearly all of conventional memory.  The work is done by the resident stub
+ * in dosswap.asm; this fills in its parameters.  Layout must match
+ * _xt_swap_param there.
+ */
+# define XT_SWAP_MAXBLK	16
+
+struct xt_swap
+{
+    unsigned	psp;			/* our PSP segment */
+    unsigned	keep;			/* paragraphs of main block kept */
+    unsigned	mainsize;		/* paragraphs of main block */
+    unsigned	nblk;			/* number of extra blocks */
+    unsigned	blkseg[XT_SWAP_MAXBLK];
+    unsigned	blksize[XT_SWAP_MAXBLK];
+    unsigned	result;			/* child exit code */
+    unsigned	error;			/* SWAP_ERR_* */
+    char	swapname[80];
+    char	prog[80];
+    char	tail[128];
+};
+
+extern struct xt_swap far   xt_swap_param;
+extern char far		    xt_swap_end;
+extern int		    xt_swap_run(void);
+
+# define SWAP_ERR_CREATE    1	/* can't create swap file */
+# define SWAP_ERR_WRITE	    2	/* can't write swap file (disk full?) */
+# define SWAP_ERR_EXEC	    3	/* DOS EXEC failed */
+
+/*
+ * The interrupt vector table as it was when Vim started.  Unused vectors
+ * hold leftover garbage, which may happen to point anywhere; only a vector
+ * that changed since then can have been pointed into Vim by Vim.
+ */
+static unsigned long far    *start_vectors = NULL;
+
+    static void
+swap_save_vectors(void)
+{
+    if (start_vectors == NULL)
+	start_vectors = (unsigned long far *)alloc(256 * 4);
+    if (start_vectors != NULL)
+	_fmemcpy(start_vectors, MK_FP(0, 0), 256 * 4);
+}
+
+/*
+ * Return the number + 1 of an interrupt vector that was changed since Vim
+ * started and points into memory that would be swapped out (a handler there
+ * would run garbage while the program runs), or 0.
+ */
+    static int
+swap_vector_hooked(struct xt_swap far *sp)
+{
+    unsigned long far	*vec = (unsigned long far *)MK_FP(0, 0);
+    unsigned long	lo, hi, v;
+    int			i, b;
+
+    for (i = 0; i < 256; ++i)
+    {
+	if (start_vectors != NULL && vec[i] == start_vectors[i])
+	    continue;
+	v = ((vec[i] >> 16) << 4) + (vec[i] & 0xffff);
+	lo = (unsigned long)(sp->psp + sp->keep) << 4;
+	hi = (unsigned long)(sp->psp + sp->mainsize) << 4;
+	if (v >= lo && v < hi)
+	    return i + 1;
+	for (b = 0; b < sp->nblk; ++b)
+	{
+	    lo = (unsigned long)sp->blkseg[b] << 4;
+	    hi = lo + ((unsigned long)sp->blksize[b] << 4);
+	    if (v >= lo && v < hi)
+		return i + 1;
+	}
+    }
+    return 0;
+}
+
+/*
+ * Find the program for 'shell' on the PATH, like COMMAND.COM would.
+ */
+    static int
+swap_find_shell(char *prog)
+{
+    char	buf[_MAX_PATH];
+    char	name[_MAX_PATH];
+    static char	*ext[] = {"", ".com", ".exe"};
+    int		i;
+
+    if (vim_strchr(p_sh, '\\') != NULL || vim_strchr(p_sh, '/') != NULL
+					    || vim_strchr(p_sh, ':') != NULL)
+    {
+	if (STRLEN(p_sh) >= 80)
+	    return FAIL;
+	STRCPY(prog, p_sh);
+	return OK;
+    }
+    for (i = 0; i < 3; ++i)
+    {
+	if (STRLEN(p_sh) + 4 >= sizeof(name))
+	    return FAIL;
+	STRCPY(name, p_sh);
+	STRCAT(name, ext[i]);
+	_searchenv(name, "PATH", buf);
+	if (buf[0] != NUL && mch_isdir((char_u *)buf) == FALSE)
+	{
+	    if (STRLEN(buf) >= 80)
+		return FAIL;
+	    STRCPY(prog, buf);
+	    return OK;
+	}
+    }
+    return FAIL;
+}
+
+/*
+ * Run "cmd" with 'shell' (an interactive shell when "cmd" is NULL) while
+ * Vim is swapped out.  Returns the exit code, or -1 when swapping isn't
+ * possible; the caller then falls back to system().
+ */
+    static int
+swap_shell(char_u *cmd)
+{
+    struct xt_swap far	*sp = &xt_swap_param;
+    union REGS		regs;
+    struct SREGS	sregs;
+    unsigned		mcb, env;
+    unsigned char far	*m;
+    char_u		*name;
+    char		*why;
+    static char		whybuf[60];
+    int			len;
+
+    sp->psp = _psp;
+    sp->keep = FP_SEG(&xt_swap_end) + ((FP_OFF(&xt_swap_end) + 15) >> 4)
+								    - _psp;
+    sp->mainsize = *(unsigned far *)MK_FP(_psp - 1, 3);
+    if (sp->keep >= sp->mainsize)
+	return -1;
+
+    /* All other DOS blocks we own, except the environment, are heap. */
+    env = *(unsigned far *)MK_FP(_psp, 0x2c);
+    sp->nblk = 0;
+    regs.h.ah = 0x52;		/* list of lists: first MCB at ES:BX-2 */
+    intdosx(&regs, &regs, &sregs);
+    mcb = *(unsigned far *)MK_FP(sregs.es, regs.x.bx - 2);
+    for (;;)
+    {
+	m = (unsigned char far *)MK_FP(mcb, 0);
+	if (*(unsigned far *)(m + 1) == _psp && mcb + 1 != _psp
+							   && mcb + 1 != env)
+	{
+	    if (sp->nblk == XT_SWAP_MAXBLK)
+	    {
+		why = "too many memory blocks";
+		goto noswap;
+	    }
+	    sp->blkseg[sp->nblk] = mcb + 1;
+	    sp->blksize[sp->nblk] = *(unsigned far *)(m + 3);
+	    ++sp->nblk;
+	}
+	if (m[0] != 'M')
+	    break;
+	mcb += *(unsigned far *)(m + 3) + 1;
+    }
+
+    if ((len = swap_vector_hooked(sp)) != 0)
+    {
+	sprintf(whybuf, "interrupt %02X points into Vim (%04X:%04X)", len - 1,
+		*(unsigned far *)MK_FP(0, (len - 1) * 4 + 2),
+		*(unsigned far *)MK_FP(0, (len - 1) * 4));
+	why = whybuf;
+	goto noswap;
+    }
+    if (swap_find_shell(sp->prog) == FAIL)
+    {
+	why = "'shell' not found";
+	goto noswap;
+    }
+
+    /* Command tail: length byte, text, CR; DOS allows 126 characters. */
+    if (cmd == NULL)
+	len = 0;
+    else
+    {
+	len = STRLEN(p_shcf) + STRLEN(cmd) + 2;
+	if (len > 126)
+	{
+	    why = "command longer than 126 characters";
+	    goto noswap;
+	}
+	sprintf(sp->tail + 1, " %s %s", p_shcf, cmd);
+    }
+    sp->tail[0] = len;
+    sp->tail[len + 1] = '\r';
+
+    /* Swap file in $TEMP or $TMP, else the current directory.  The PSP
+     * segment in the name keeps Vims nested with :sh apart. */
+    sp->swapname[0] = NUL;
+    if (((name = mch_getenv((char_u *)"TEMP")) != NULL && *name != NUL)
+	    || ((name = mch_getenv((char_u *)"TMP")) != NULL && *name != NUL))
+    {
+	if (STRLEN(name) > sizeof(sp->swapname) - 14)
+	{
+	    why = "$TEMP is too long";
+	    goto noswap;
+	}
+	STRCPY(sp->swapname, name);
+	len = STRLEN(sp->swapname);
+	if (sp->swapname[len - 1] != '\\' && sp->swapname[len - 1] != '/'
+					    && sp->swapname[len - 1] != ':')
+	    STRCAT(sp->swapname, "\\");
+    }
+    sprintf(sp->swapname + STRLEN(sp->swapname), "VIM%04X.SWP", _psp);
+
+    switch (xt_swap_run())
+    {
+	case 0:
+	    return sp->result & 0xff;
+	case SWAP_ERR_EXEC:
+	    MSG_PUTS("\nCannot execute ");
+	    msg_outtrans(p_sh);
+	    msg_putchar('\n');
+	    return 127;
+	case SWAP_ERR_CREATE:
+	    why = "cannot create swap file";
+	    break;
+	default:
+	    why = "cannot write swap file (disk full?)";
+	    break;
+    }
+
+noswap:
+    MSG_PUTS("\nNot swapping Vim out: ");
+    MSG_PUTS(why);
+    msg_putchar('\n');
+    return -1;
+}
+#endif /* XT_SWAP */
+
 /*
  * call shell, return FAIL for failure, OK otherwise
  * options: SHELL_*, see vim.h.
@@ -2221,6 +2470,11 @@ mch_call_shell(
     signal(SIGHUP, SIG_IGN);
     signal(SIGQUIT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);
+#endif
+#ifdef XT_SWAP
+    if ((x = swap_shell(cmd)) != -1)
+	;
+    else
 #endif
     if (cmd == NULL)
 	x = system((char *)p_sh);

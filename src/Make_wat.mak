@@ -12,6 +12,7 @@
 #
 
 CC = wcc
+AS = wasm
 LINK = wlink
 
 OBJDIR = objwat
@@ -24,6 +25,23 @@ OBJDIR = objwat
 # -fpc	floating point calls (none are used)
 # -zt	put data items larger than this many bytes in far segments
 CFLAGS = -zq -0 -ml -bt=dos -j -fpc -zt=256 -iproto -dMSDOS -dPC
+AFLAGS = -zq -0
+
+# SWAP=0: don't swap Vim out to disk for :! and :make (dosswap.asm)
+!ifndef SWAP
+SWAP = 1
+!endif
+!ifeq SWAP 1
+CFLAGS += -dXT_SWAP
+SWAPOBJ = $(OBJDIR)/dosswap.obj
+!else
+SWAPOBJ =
+!endif
+
+# SWAPTRACE=1: dosswap.asm shows its stage on a colour screen
+!ifdef SWAPTRACE
+AFLAGS += -dXT_SWAP_TRACE
+!endif
 
 !ifdef DEBUG
 # -d2	full debug info, -od no optimisation; stack checking stays on
@@ -37,7 +55,10 @@ LFLAGS =
 STACK = 8192
 !endif
 
+# The swap stub must come first: it stays resident after the PSP while
+# everything linked after it is swapped out.
 OBJ = &
+	$(SWAPOBJ) &
 	$(OBJDIR)/buffer.obj &
 	$(OBJDIR)/charset.obj &
 	$(OBJDIR)/digraph.obj &
@@ -92,8 +113,12 @@ $(OBJDIR):
 	mkdir $(OBJDIR)
 
 .c: .
+.asm: .
 .c{$(OBJDIR)}.obj: .AUTODEPEND
 	$(CC) $(CFLAGS) -fr=$(OBJDIR)/$^&.err -fo=$@ $[@
+
+.asm{$(OBJDIR)}.obj:
+	$(AS) $(AFLAGS) -fo=$@ $[@
 
 clean: .SYMBOLIC
 	rm -rf $(OBJDIR)
