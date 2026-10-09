@@ -522,6 +522,13 @@ list_version()
 # else
     MSG_PUTS("\n16 bit MS-DOS version");
 # endif
+# ifdef __WATCOMC__
+    /* XT fork: not an official release.  The Open Watcom license asks for a
+     * notice in the program that its run-time library source is available. */
+    MSG_PUTS("\nIBM PC/XT fork, not an official Vim: github.com/robertrico/vim-xt");
+    MSG_PUTS("\nBuilt with Open Watcom; its run-time library source is available");
+    MSG_PUTS("\nunder the Sybase Open Watcom Public License: github.com/open-watcom");
+# endif
 #endif
 #ifdef macintosh
     MSG_PUTS("\nMacOS version");
